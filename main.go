@@ -153,8 +153,8 @@ var initCmd = cli.Command{
 			NodeType:  c.String("type"),
 		}
 
-		err := util.IpfsInit(cfg)
-		handleErr("ipfs init err: ", err)
+		err := util.TestbedInit(cfg)
+		handleErr("testbed init err: ", err)
 		return nil
 	},
 }
@@ -203,7 +203,7 @@ var startCmd = cli.Command{
 		if err != nil {
 			return err
 		}
-		return util.IpfsStart(nodes, c.Bool("wait"), extra)
+		return util.TestbedStart(nodes, c.Bool("wait"), extra)
 	},
 }
 
@@ -286,7 +286,7 @@ var restartCmd = cli.Command{
 			return fmt.Errorf("ipfs kill err: %s", err)
 		}
 
-		err = util.IpfsStart(nodes, c.Bool("wait"), nil)
+		err = util.TestbedStart(nodes, c.Bool("wait"), nil)
 		handleErr("ipfs start err: ", err)
 		return nil
 	},
@@ -523,7 +523,7 @@ var logsCmd = cli.Command{
 		},
 	},
 	Action: func(c *cli.Context) error {
-		var nodes []util.IpfsNode
+		var nodes []util.TestbedNode
 		var err error
 
 		if c.Args()[0] == "*" {

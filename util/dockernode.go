@@ -15,6 +15,7 @@ import (
 	"github.com/whyrusleeping/stump"
 )
 
+// DockerNode is a dockerized ipfs node
 type DockerNode struct {
 	ImageName string
 	ID        string
@@ -24,7 +25,7 @@ type DockerNode struct {
 	LocalNode
 }
 
-var _ IpfsNode = &DockerNode{}
+var _ TestbedNode = &DockerNode{}
 
 func (dn *DockerNode) Start(args []string) error {
 	if len(args) > 0 {
@@ -227,4 +228,8 @@ func (dn *DockerNode) getInterfaceName() (string, error) {
 	}
 
 	return "", fmt.Errorf("could not determine interface")
+}
+
+func (dn *DockerNode) BinName() string {
+	return "ipfs"
 }

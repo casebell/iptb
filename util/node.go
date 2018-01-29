@@ -4,7 +4,7 @@ import (
 	"github.com/ipfs/go-ipfs/repo/config"
 )
 
-type IpfsNode interface {
+type TestbedNode interface {
 	Init() error
 	Kill() error
 	Start(args []string) error
@@ -13,6 +13,7 @@ type IpfsNode interface {
 	RunCmd(args ...string) (string, error)
 	Shell() error
 	String() string
+	BinName() string
 
 	GetAttr(string) (string, error)
 	SetAttr(string, string) error

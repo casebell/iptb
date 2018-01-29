@@ -2,7 +2,6 @@ package iptbutil
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	serial "github.com/ipfs/go-ipfs/repo/fsrepo/serialize"
+	"github.com/pkg/errors"
 	"github.com/whyrusleeping/stump"
 )
 
@@ -110,16 +110,26 @@ func YesNoPrompt(prompt string) bool {
 	}
 }
 
-func LoadNodeN(n int) (IpfsNode, error) {
+func LoadNodeN(n int) (TestbedNode, error) {
 	specs, err := ReadNodeSpecs()
 	if err != nil {
 		return nil, err
 	}
 
-	return specs[n].Load()
+	nd, err := specs[n].Load()
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO: this is a hack
+	if fn, ok := nd.(*FilecoinNode); ok {
+		fn.ApiPort = fmt.Sprintf(":%d", 6000+n)
+	}
+
+	return nd, nil
 }
 
-func LoadNodes() ([]IpfsNode, error) {
+func LoadNodes() ([]TestbedNode, error) {
 	specs, err := ReadNodeSpecs()
 	if err != nil {
 		return nil, err
@@ -128,13 +138,18 @@ func LoadNodes() ([]IpfsNode, error) {
 	return NodesFromSpecs(specs)
 }
 
-func NodesFromSpecs(specs []*NodeSpec) ([]IpfsNode, error) {
-	var out []IpfsNode
-	for _, s := range specs {
+func NodesFromSpecs(specs []*NodeSpec) ([]TestbedNode, error) {
+	var out []TestbedNode
+	for i, s := range specs {
 		nd, err := s.Load()
 		if err != nil {
 			return nil, err
 		}
+		// TODO: this is a hack
+		if fn, ok := nd.(*FilecoinNode); ok {
+			fn.ApiPort = fmt.Sprintf(":%d", 6000+i)
+		}
+
 		out = append(out, nd)
 	}
 	return out, nil
@@ -191,7 +206,7 @@ func WriteNodeSpecs(specs []*NodeSpec) error {
 	return nil
 }
 
-func (ns *NodeSpec) Load() (IpfsNode, error) {
+func (ns *NodeSpec) Load() (TestbedNode, error) {
 	switch ns.Type {
 	case "local":
 		ln := &LocalNode{
@@ -208,6 +223,14 @@ func (ns *NodeSpec) Load() (IpfsNode, error) {
 		}
 
 		return ln, nil
+	case "filecoin":
+		fn := &FilecoinNode{
+			Dir: ns.Dir,
+		}
+
+		// TODO: load peerID
+
+		return fn, nil
 	case "docker":
 		imgi, ok := ns.Extra["image"]
 		if !ok {
@@ -272,6 +295,11 @@ func initSpecs(cfg *InitCfg) ([]*NodeSpec, error) {
 					"image": img,
 				},
 			}
+		case "filecoin":
+			ns = &NodeSpec{
+				Type: "filecoin",
+				Dir:  dir,
+			}
 		default:
 			ns = &NodeSpec{
 				Type: "local",
@@ -284,7 +312,7 @@ func initSpecs(cfg *InitCfg) ([]*NodeSpec, error) {
 	return specs, nil
 }
 
-func IpfsInit(cfg *InitCfg) error {
+func TestbedInit(cfg *InitCfg) error {
 	tbd, err := TestBedDir()
 	if err != nil {
 		return err
@@ -319,7 +347,7 @@ func IpfsInit(cfg *InitCfg) error {
 	wait := sync.WaitGroup{}
 	for _, n := range nodes {
 		wait.Add(1)
-		go func(nd IpfsNode) {
+		go func(nd TestbedNode) {
 			defer wait.Done()
 			err := nd.Init()
 			if err != nil {
@@ -342,6 +370,8 @@ func IpfsInit(cfg *InitCfg) error {
 		if err != nil {
 			return err
 		}
+	case "skip":
+		// completely ignore bootstrapping during init
 	default:
 		return fmt.Errorf("unrecognized bootstrapping option: %s", cfg.Bootstrap)
 	}
@@ -394,7 +424,7 @@ func applyOverrideToNode(ovr map[string]interface{}, node int) error {
 	panic("not implemented")
 }
 
-func starBootstrap(nodes []IpfsNode, icfg *InitCfg) error {
+func starBootstrap(nodes []TestbedNode, icfg *InitCfg) error {
 	// '0' node is the bootstrap node
 	king := nodes[0]
 
@@ -438,7 +468,7 @@ func starBootstrap(nodes []IpfsNode, icfg *InitCfg) error {
 	return nil
 }
 
-func clearBootstrapping(nodes []IpfsNode, icfg *InitCfg) error {
+func clearBootstrapping(nodes []TestbedNode, icfg *InitCfg) error {
 	for i, nd := range nodes {
 		cfg, err := nd.GetConfig()
 		if err != nil {
@@ -458,7 +488,7 @@ func clearBootstrapping(nodes []IpfsNode, icfg *InitCfg) error {
 	return nil
 }
 
-func IpfsKillAll(nds []IpfsNode) error {
+func IpfsKillAll(nds []TestbedNode) error {
 	var errs []error
 	for _, n := range nds {
 		err := n.Kill()
@@ -476,10 +506,13 @@ func IpfsKillAll(nds []IpfsNode) error {
 	return nil
 }
 
-func IpfsStart(nodes []IpfsNode, waitall bool, args []string) error {
-	for _, n := range nodes {
+func TestbedStart(nodes []TestbedNode, waitall bool, args []string) error {
+	for i, n := range nodes {
+		if fn, ok := n.(*FilecoinNode); ok {
+			fn.ApiPort = fmt.Sprintf(":%d", 6000+i)
+		}
 		if err := n.Start(args); err != nil {
-			return err
+			return errors.Wrapf(err, "node %d start failed", i)
 		}
 	}
 	if waitall {
@@ -494,7 +527,7 @@ func IpfsStart(nodes []IpfsNode, waitall bool, args []string) error {
 	return nil
 }
 
-func waitOnAPI(n IpfsNode) error {
+func waitOnAPI(n TestbedNode) error {
 	for i := 0; i < 50; i++ {
 		err := tryAPICheck(n)
 		if err == nil {
@@ -506,7 +539,7 @@ func waitOnAPI(n IpfsNode) error {
 	return fmt.Errorf("node %s failed to come online in given time period", n.GetPeerID())
 }
 
-func tryAPICheck(n IpfsNode) error {
+func tryAPICheck(n TestbedNode) error {
 	addr, err := n.APIAddr()
 	if err != nil {
 		return err
@@ -537,7 +570,7 @@ func tryAPICheck(n IpfsNode) error {
 	return nil
 }
 
-func waitOnSwarmPeers(n IpfsNode) error {
+func waitOnSwarmPeers(n TestbedNode) error {
 	addr, err := n.APIAddr()
 	if err != nil {
 		return err
@@ -590,13 +623,13 @@ func GetPeerID(ipfsdir string) (string, error) {
 	return cfg.Identity.PeerID, nil
 }
 
-func ConnectNodes(from, to IpfsNode) error {
+func ConnectNodes(from, to TestbedNode) error {
 	if from == to {
 		// skip connecting to self..
 		return nil
 	}
 
-	out, err := to.RunCmd("ipfs", "id", "-f", "<addrs>")
+	out, err := to.RunCmd(to.BinName(), "id", "-f", "<addrs>")
 	if err != nil {
 		return fmt.Errorf("error checking node address: %s", err)
 	}
@@ -609,7 +642,7 @@ func ConnectNodes(from, to IpfsNode) error {
 	for i := 0; i < len(addrs); i++ {
 		addr := addrs[i]
 		stump.Log("trying ipfs swarm connect %s", addr)
-		_, err = from.RunCmd("ipfs", "swarm", "connect", addr)
+		_, err = from.RunCmd(from.BinName(), "swarm", "connect", addr)
 		if err == nil {
 			stump.Log("connection success!")
 			break
@@ -635,7 +668,7 @@ type BW struct {
 	TotalOut int
 }
 
-func GetBW(n IpfsNode) (*BW, error) {
+func GetBW(n TestbedNode) (*BW, error) {
 	addr, err := n.APIAddr()
 	if err != nil {
 		return nil, err

@@ -83,21 +83,24 @@ func (n *LocalNode) Shell() error {
 }
 
 func (n *LocalNode) RunCmd(args ...string) (string, error) {
-	cmd := exec.Command(args[0], args[1:]...)
-
-	var err error
-	cmd.Env, err = n.envForDaemon()
+	env, err := n.envForDaemon()
 	if err != nil {
 		return "", err
 	}
+
+	return runCmd(args, env)
+}
+
+func runCmd(args, env []string) (string, error) {
+	cmd := exec.Command(args[0], args[1:]...)
 
 	outbuf := new(bytes.Buffer)
 	errbuf := new(bytes.Buffer)
 	cmd.Stdout = outbuf
 	cmd.Stderr = errbuf
+	cmd.Env = env
 
-	err = cmd.Run()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("%s: %s %s", err, outbuf.String(), errbuf.String())
 	}
 
@@ -142,7 +145,34 @@ func (n *LocalNode) envForDaemon() ([]string, error) {
 }
 
 func (n *LocalNode) Start(args []string) error {
-	alive, err := n.isAlive()
+	env, err := n.envForDaemon()
+	if err != nil {
+		return err
+	}
+
+	if err := startProcess("ipfs", "daemon", args, n.Dir, env); err != nil {
+		return err
+	}
+
+	// Make sure node 0 is up before starting the rest so
+	// bootstrapping works properly
+	cfg, err := serial.Load(filepath.Join(n.Dir, "config"))
+	if err != nil {
+		return err
+	}
+
+	n.PeerID = cfg.Identity.PeerID
+
+	err = waitOnAPI(n)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func startProcess(bin string, dcmd string, args []string, dir string, env []string) error {
+	alive, err := isAlive(dir)
 	if err != nil {
 		return err
 	}
@@ -151,15 +181,10 @@ func (n *LocalNode) Start(args []string) error {
 		return fmt.Errorf("node is already running")
 	}
 
-	dir := n.Dir
-	dargs := append([]string{"daemon"}, args...)
-	cmd := exec.Command("ipfs", dargs...)
+	dargs := append([]string{dcmd}, args...)
+	cmd := exec.Command(bin, dargs...)
 	cmd.Dir = dir
-
-	cmd.Env, err = n.envForDaemon()
-	if err != nil {
-		return err
-	}
+	cmd.Env = env
 
 	setupOpt(cmd)
 
@@ -188,25 +213,11 @@ func (n *LocalNode) Start(args []string) error {
 		return err
 	}
 
-	// Make sure node 0 is up before starting the rest so
-	// bootstrapping works properly
-	cfg, err := serial.Load(filepath.Join(dir, "config"))
-	if err != nil {
-		return err
-	}
-
-	n.PeerID = cfg.Identity.PeerID
-
-	err = waitOnAPI(n)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 
-func (n *LocalNode) getPID() (int, error) {
-	b, err := ioutil.ReadFile(filepath.Join(n.Dir, "daemon.pid"))
+func getPID(dir string) (int, error) {
+	b, err := ioutil.ReadFile(filepath.Join(dir, "daemon.pid"))
 	if err != nil {
 		return -1, err
 	}
@@ -214,8 +225,8 @@ func (n *LocalNode) getPID() (int, error) {
 	return strconv.Atoi(string(b))
 }
 
-func (n *LocalNode) isAlive() (bool, error) {
-	pid, err := n.getPID()
+func isAlive(dir string) (bool, error) {
+	pid, err := getPID(dir)
 	if os.IsNotExist(err) {
 		return false, nil
 	} else if err != nil {
@@ -235,26 +246,30 @@ func (n *LocalNode) isAlive() (bool, error) {
 }
 
 func (n *LocalNode) Kill() error {
-	pid, err := n.getPID()
+	pid, err := getPID(n.Dir)
 	if err != nil {
 		return fmt.Errorf("error killing daemon %s: %s", n.Dir, err)
 	}
 
+	return killPid(pid, n.Dir)
+}
+
+func killPid(pid int, dir string) error {
 	p, err := os.FindProcess(pid)
 	if err != nil {
-		return fmt.Errorf("error killing daemon %s: %s", n.Dir, err)
+		return fmt.Errorf("error killing daemon %s: %s", dir, err)
 	}
 
 	defer func() {
-		err := os.Remove(filepath.Join(n.Dir, "daemon.pid"))
+		err := os.Remove(filepath.Join(dir, "daemon.pid"))
 		if err != nil && !os.IsNotExist(err) {
-			panic(fmt.Errorf("error removing pid file for daemon at %s: %s\n", n.Dir, err))
+			panic(fmt.Errorf("error removing pid file for daemon at %s: %s\n", dir, err))
 		}
 	}()
 
-	err = p.Signal(syscall.SIGTERM)
+	err = p.Signal(syscall.SIGINT)
 	if err != nil {
-		return fmt.Errorf("error killing daemon %s: %s\n", n.Dir, err)
+		return fmt.Errorf("error killing daemon %s: %s\n", dir, err)
 	}
 
 	err = waitProcess(p, 1000)
@@ -262,9 +277,9 @@ func (n *LocalNode) Kill() error {
 		return nil
 	}
 
-	err = p.Signal(syscall.SIGTERM)
+	err = p.Signal(syscall.SIGINT)
 	if err != nil {
-		return fmt.Errorf("error killing daemon %s: %s\n", n.Dir, err)
+		return fmt.Errorf("error killing daemon %s: %s\n", dir, err)
 	}
 
 	err = waitProcess(p, 1000)
@@ -274,7 +289,7 @@ func (n *LocalNode) Kill() error {
 
 	err = p.Signal(syscall.SIGQUIT)
 	if err != nil {
-		return fmt.Errorf("error killing daemon %s: %s\n", n.Dir, err)
+		return fmt.Errorf("error killing daemon %s: %s\n", dir, err)
 	}
 
 	err = waitProcess(p, 5000)
@@ -284,7 +299,7 @@ func (n *LocalNode) Kill() error {
 
 	err = p.Signal(syscall.SIGKILL)
 	if err != nil {
-		return fmt.Errorf("error killing daemon %s: %s\n", n.Dir, err)
+		return fmt.Errorf("error killing daemon %s: %s\n", dir, err)
 	}
 
 	for {
@@ -355,4 +370,8 @@ func (n *LocalNode) StderrReader() (io.ReadCloser, error) {
 func (n *LocalNode) readerFor(file string) (io.ReadCloser, error) {
 	f, err := os.OpenFile(filepath.Join(n.Dir, file), os.O_RDONLY, 0)
 	return f, err
+}
+
+func (n *LocalNode) BinName() string {
+	return "ipfs"
 }
