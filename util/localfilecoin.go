@@ -43,7 +43,7 @@ func (fn *FilecoinNode) Start(args []string) error {
 		return err
 	}
 
-	args = append([]string{"--api=" + fn.ApiPort}, args...)
+	args = append([]string{"--api=" + fn.ApiPort, "--swarmlisten=/ip4/127.0.0.1/tcp/0"}, args...)
 	if err := startProcess("go-filecoin", "daemon", args, fn.Dir, env); err != nil {
 		return err
 	}
